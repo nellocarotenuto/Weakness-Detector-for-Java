@@ -1,0 +1,4 @@
+package org.apache.ignite.internal.benchmarks.jmh.streamer.generated;
+public class JmhStreamerAddDataBenchmark_StreamingData_jmhType extends JmhStreamerAddDataBenchmark_StreamingData_jmhType_B3 {
+}
+

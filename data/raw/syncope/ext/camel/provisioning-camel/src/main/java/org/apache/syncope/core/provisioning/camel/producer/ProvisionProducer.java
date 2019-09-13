@@ -1,0 +1,98 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.syncope.core.provisioning.camel.producer;
+
+import java.util.List;
+import java.util.stream.Collectors;
+import org.apache.camel.Endpoint;
+import org.apache.camel.Exchange;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.syncope.common.lib.patch.PasswordPatch;
+import org.apache.syncope.common.lib.patch.StringPatchItem;
+import org.apache.syncope.common.lib.patch.UserPatch;
+import org.apache.syncope.common.lib.types.AnyTypeKind;
+import org.apache.syncope.common.lib.types.PatchOperation;
+import org.apache.syncope.common.lib.types.ResourceOperation;
+import org.apache.syncope.core.provisioning.api.PropagationByResource;
+import org.apache.syncope.core.provisioning.api.WorkflowResult;
+import org.apache.syncope.core.provisioning.api.propagation.PropagationReporter;
+import org.apache.syncope.core.provisioning.api.propagation.PropagationTaskInfo;
+
+public class ProvisionProducer extends AbstractProducer {
+
+    public ProvisionProducer(final Endpoint endpoint, final AnyTypeKind anyType) {
+        super(endpoint, anyType);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public void process(final Exchange exchange) throws Exception {
+        String key = exchange.getIn().getBody(String.class);
+        List<String> resources = exchange.getProperty("resources", List.class);
+        Boolean nullPriorityAsync = exchange.getProperty("nullPriorityAsync", Boolean.class);
+
+        if (getAnyTypeKind() == AnyTypeKind.USER) {
+            Boolean changePwd = exchange.getProperty("changePwd", Boolean.class);
+            String password = exchange.getProperty("password", String.class);
+
+            UserPatch userPatch = new UserPatch();
+            userPatch.setKey(key);
+            userPatch.getResources().addAll(resources.stream().map(resource
+                    -> new StringPatchItem.Builder().operation(PatchOperation.ADD_REPLACE).value(resource).build()).
+                    collect(Collectors.toList()));
+
+            if (changePwd) {
+                userPatch.setPassword(
+                        new PasswordPatch.Builder().onSyncope(true).value(password).resources(resources).build());
+            }
+
+            PropagationByResource propByRes = new PropagationByResource();
+            propByRes.addAll(ResourceOperation.UPDATE, resources);
+
+            WorkflowResult<Pair<UserPatch, Boolean>> wfResult = new WorkflowResult<>(
+                    ImmutablePair.of(userPatch, (Boolean) null), propByRes, "update");
+
+            List<PropagationTaskInfo> taskInfos = getPropagationManager().getUserUpdateTasks(wfResult, changePwd, null);
+            PropagationReporter reporter = getPropagationTaskExecutor().execute(taskInfos, nullPriorityAsync);
+
+            exchange.getOut().setBody(reporter.getStatuses());
+        } else {
+            PropagationByResource propByRes = new PropagationByResource();
+            propByRes.addAll(ResourceOperation.UPDATE, resources);
+
+            AnyTypeKind anyTypeKind = AnyTypeKind.GROUP;
+            if (getAnyTypeKind() != null) {
+                anyTypeKind = getAnyTypeKind();
+            }
+
+            List<PropagationTaskInfo> taskInfos = getPropagationManager().getUpdateTasks(
+                    anyTypeKind,
+                    key,
+                    false,
+                    null,
+                    propByRes,
+                    null,
+                    null);
+            PropagationReporter reporter = getPropagationTaskExecutor().execute(taskInfos, nullPriorityAsync);
+
+            exchange.getOut().setBody(reporter.getStatuses());
+        }
+    }
+}

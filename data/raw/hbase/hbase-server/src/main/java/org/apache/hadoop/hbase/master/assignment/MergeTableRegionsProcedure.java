@@ -1,0 +1,830 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hadoop.hbase.master.assignment;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.MetaMutationAnnotation;
+import org.apache.hadoop.hbase.ServerName;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.UnknownRegionException;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.DoNotRetryRegionException;
+import org.apache.hadoop.hbase.client.MasterSwitchType;
+import org.apache.hadoop.hbase.client.Mutation;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
+import org.apache.hadoop.hbase.client.RegionReplicaUtil;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.exceptions.MergeRegionException;
+import org.apache.hadoop.hbase.io.hfile.CacheConfig;
+import org.apache.hadoop.hbase.master.CatalogJanitor;
+import org.apache.hadoop.hbase.master.MasterCoprocessorHost;
+import org.apache.hadoop.hbase.master.MasterFileSystem;
+import org.apache.hadoop.hbase.master.RegionState;
+import org.apache.hadoop.hbase.master.RegionState.State;
+import org.apache.hadoop.hbase.master.normalizer.NormalizationPlan;
+import org.apache.hadoop.hbase.master.procedure.AbstractStateMachineTableProcedure;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv;
+import org.apache.hadoop.hbase.master.procedure.MasterProcedureUtil;
+import org.apache.hadoop.hbase.master.procedure.TableQueue;
+import org.apache.hadoop.hbase.procedure2.ProcedureMetrics;
+import org.apache.hadoop.hbase.procedure2.ProcedureStateSerializer;
+import org.apache.hadoop.hbase.quotas.QuotaExceededException;
+import org.apache.hadoop.hbase.regionserver.HRegionFileSystem;
+import org.apache.hadoop.hbase.regionserver.HStoreFile;
+import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.wal.WALSplitter;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+
+import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.MasterProcedureProtos.MergeTableRegionsState;
+
+/**
+ * The procedure to Merge regions in a table. This procedure takes an exclusive table
+ * lock since it is working over multiple regions. It holds the lock for the life of the procedure.
+ * Throws exception on construction if determines context hostile to merge (cluster going down or
+ * master is shutting down or table is disabled).
+ */
+@InterfaceAudience.Private
+public class MergeTableRegionsProcedure
+    extends AbstractStateMachineTableProcedure<MergeTableRegionsState> {
+  private static final Logger LOG = LoggerFactory.getLogger(MergeTableRegionsProcedure.class);
+  private ServerName regionLocation;
+
+  /**
+   * Two or more regions to merge, the 'merge parents'.
+   */
+  private RegionInfo[] regionsToMerge;
+
+  /**
+   * The resulting merged region.
+   */
+  private RegionInfo mergedRegion;
+
+  private boolean force;
+
+  public MergeTableRegionsProcedure() {
+    // Required by the Procedure framework to create the procedure on replay
+  }
+
+  public MergeTableRegionsProcedure(final MasterProcedureEnv env,
+      final RegionInfo[] regionsToMerge, final boolean force)
+      throws IOException {
+    super(env);
+    // Check parent regions. Make sure valid before starting work.
+    // This check calls the super method #checkOnline also.
+    checkRegionsToMerge(env, regionsToMerge, force);
+    // Sort the regions going into the merge.
+    Arrays.sort(regionsToMerge);
+    this.regionsToMerge = regionsToMerge;
+    this.mergedRegion = createMergedRegionInfo(regionsToMerge);
+    // Preflight depends on mergedRegion being set (at least).
+    preflightChecks(env, true);
+    this.force = force;
+  }
+
+  /**
+   * @throws MergeRegionException If unable to merge regions for whatever reasons.
+   */
+  private static void checkRegionsToMerge(MasterProcedureEnv env, final RegionInfo[] regions,
+      final boolean force) throws MergeRegionException {
+    long count = Arrays.stream(regions).distinct().count();
+    if (regions.length != count) {
+      throw new MergeRegionException("Duplicate regions specified; cannot merge a region to " +
+          "itself. Passed in " + regions.length + " but only " + count + " unique.");
+    }
+    if (count < 2) {
+      throw new MergeRegionException("Need two Regions at least to run a Merge");
+    }
+    RegionInfo previous = null;
+    for (RegionInfo ri: regions) {
+      if (previous != null) {
+        if (!previous.getTable().equals(ri.getTable())) {
+          String msg = "Can't merge regions from different tables: " + previous + ", " + ri;
+          LOG.warn(msg);
+          throw new MergeRegionException(msg);
+        }
+        if (!force && !ri.isAdjacent(previous) && !ri.isOverlap(previous)) {
+          String msg = "Unable to merge non-adjacent or non-overlapping regions " +
+              previous.getShortNameToLog() + ", " + ri.getShortNameToLog() + " when force=false";
+          LOG.warn(msg);
+          throw new MergeRegionException(msg);
+        }
+      }
+
+      if (ri.getReplicaId() != RegionInfo.DEFAULT_REPLICA_ID) {
+        throw new MergeRegionException("Can't merge non-default replicas; " + ri);
+      }
+      try {
+        checkOnline(env, ri);
+      } catch (DoNotRetryRegionException dnrre) {
+        throw new MergeRegionException(dnrre);
+      }
+
+      previous = ri;
+    }
+  }
+
+  /**
+   * Create merged region info by looking at passed in <code>regionsToMerge</code>
+   * to figure what extremes for start and end keys to use; merged region needs
+   * to have an extent sufficient to cover all regions-to-merge.
+   */
+  private static RegionInfo createMergedRegionInfo(final RegionInfo[] regionsToMerge) {
+    byte [] lowestStartKey = null;
+    byte [] highestEndKey = null;
+    long highestRegionId = -1;
+    for (RegionInfo ri: regionsToMerge) {
+      if (lowestStartKey == null) {
+        lowestStartKey = ri.getStartKey();
+      } else if (Bytes.compareTo(ri.getStartKey(), lowestStartKey) < 0) {
+        lowestStartKey = ri.getStartKey();
+      }
+      if (highestEndKey == null) {
+        highestEndKey = ri.getEndKey();
+      } else if (ri.isLast() || Bytes.compareTo(ri.getEndKey(), highestEndKey) > 0) {
+        highestEndKey = ri.getEndKey();
+      }
+      highestRegionId = ri.getRegionId() > highestRegionId? ri.getRegionId(): highestRegionId;
+    }
+    // Merged region is sorted between two merging regions in META
+    return RegionInfoBuilder.newBuilder(regionsToMerge[0].getTable()).
+        setStartKey(lowestStartKey).
+        setEndKey(highestEndKey).
+        setSplit(false).
+        setRegionId(highestRegionId + 1/*Add one so new merged region is highest*/).
+        build();
+  }
+
+  @Override
+  protected Flow executeFromState(final MasterProcedureEnv env,
+      MergeTableRegionsState state) {
+    LOG.trace("{} execute state={}", this, state);
+    try {
+      switch (state) {
+        case MERGE_TABLE_REGIONS_PREPARE:
+          if (!prepareMergeRegion(env)) {
+            assert isFailed() : "Merge region should have an exception here";
+            return Flow.NO_MORE_STATE;
+          }
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_PRE_MERGE_OPERATION);
+          break;
+        case MERGE_TABLE_REGIONS_PRE_MERGE_OPERATION:
+          preMergeRegions(env);
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_CLOSE_REGIONS);
+          break;
+        case MERGE_TABLE_REGIONS_CLOSE_REGIONS:
+          addChildProcedure(createUnassignProcedures(env, getRegionReplication(env)));
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_CHECK_CLOSED_REGIONS);
+          break;
+        case MERGE_TABLE_REGIONS_CHECK_CLOSED_REGIONS:
+          List<RegionInfo> ris = hasRecoveredEdits(env);
+          if (ris.isEmpty()) {
+            setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_CREATE_MERGED_REGION);
+          } else {
+            // Need to reopen parent regions to pickup missed recovered.edits. Do it by creating
+            // child assigns and then stepping back to MERGE_TABLE_REGIONS_CLOSE_REGIONS.
+            // Just assign the primary regions recovering the missed recovered.edits -- no replicas.
+            // May need to cycle here a few times if heavy writes.
+            // TODO: Add an assign read-only.
+            for (RegionInfo ri: ris) {
+              LOG.info("Found recovered.edits under {}, reopen to pickup missed edits!", ri);
+              addChildProcedure(env.getAssignmentManager().createAssignProcedure(ri));
+            }
+            setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_CLOSE_REGIONS);
+          }
+          break;
+        case MERGE_TABLE_REGIONS_CREATE_MERGED_REGION:
+          createMergedRegion(env);
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_WRITE_MAX_SEQUENCE_ID_FILE);
+          break;
+        case MERGE_TABLE_REGIONS_WRITE_MAX_SEQUENCE_ID_FILE:
+          writeMaxSequenceIdFile(env);
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_PRE_MERGE_COMMIT_OPERATION);
+          break;
+        case MERGE_TABLE_REGIONS_PRE_MERGE_COMMIT_OPERATION:
+          preMergeRegionsCommit(env);
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_UPDATE_META);
+          break;
+        case MERGE_TABLE_REGIONS_UPDATE_META:
+          updateMetaForMergedRegions(env);
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_POST_MERGE_COMMIT_OPERATION);
+          break;
+        case MERGE_TABLE_REGIONS_POST_MERGE_COMMIT_OPERATION:
+          postMergeRegionsCommit(env);
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_OPEN_MERGED_REGION);
+          break;
+        case MERGE_TABLE_REGIONS_OPEN_MERGED_REGION:
+          addChildProcedure(createAssignProcedures(env, getRegionReplication(env)));
+          setNextState(MergeTableRegionsState.MERGE_TABLE_REGIONS_POST_OPERATION);
+          break;
+        case MERGE_TABLE_REGIONS_POST_OPERATION:
+          postCompletedMergeRegions(env);
+          return Flow.NO_MORE_STATE;
+        default:
+          throw new UnsupportedOperationException(this + " unhandled state=" + state);
+      }
+    } catch (IOException e) {
+      String msg = "Error trying to merge " + RegionInfo.getShortNameToLog(regionsToMerge) +
+          " in " + getTableName() + " (in state=" + state + ")";
+      if (!isRollbackSupported(state)) {
+        // We reach a state that cannot be rolled back. We just need to keep retrying.
+        LOG.warn(msg, e);
+      } else {
+        LOG.error(msg, e);
+        setFailure("master-merge-regions", e);
+      }
+    }
+    return Flow.HAS_MORE_STATE;
+  }
+
+  /**
+   * To rollback {@link MergeTableRegionsProcedure}, two AssignProcedures are asynchronously
+   * submitted for each region to be merged (rollback doesn't wait on the completion of the
+   * AssignProcedures) . This can be improved by changing rollback() to support sub-procedures.
+   * See HBASE-19851 for details.
+   */
+  @Override
+  protected void rollbackState(final MasterProcedureEnv env, final MergeTableRegionsState state)
+      throws IOException {
+    LOG.trace("{} rollback state={}", this, state);
+
+    try {
+      switch (state) {
+        case MERGE_TABLE_REGIONS_POST_OPERATION:
+        case MERGE_TABLE_REGIONS_OPEN_MERGED_REGION:
+        case MERGE_TABLE_REGIONS_POST_MERGE_COMMIT_OPERATION:
+        case MERGE_TABLE_REGIONS_UPDATE_META:
+          String msg = this + " We are in the " + state + " state." +
+            " It is complicated to rollback the merge operation that region server is working on." +
+            " Rollback is not supported and we should let the merge operation to complete";
+          LOG.warn(msg);
+          // PONR
+          throw new UnsupportedOperationException(this + " unhandled state=" + state);
+        case MERGE_TABLE_REGIONS_PRE_MERGE_COMMIT_OPERATION:
+          break;
+        case MERGE_TABLE_REGIONS_CREATE_MERGED_REGION:
+        case MERGE_TABLE_REGIONS_WRITE_MAX_SEQUENCE_ID_FILE:
+          cleanupMergedRegion(env);
+          break;
+        case MERGE_TABLE_REGIONS_CHECK_CLOSED_REGIONS:
+          break;
+        case MERGE_TABLE_REGIONS_CLOSE_REGIONS:
+          rollbackCloseRegionsForMerge(env);
+          break;
+        case MERGE_TABLE_REGIONS_PRE_MERGE_OPERATION:
+          postRollBackMergeRegions(env);
+          break;
+        case MERGE_TABLE_REGIONS_PREPARE:
+          break;
+        default:
+          throw new UnsupportedOperationException(this + " unhandled state=" + state);
+      }
+    } catch (Exception e) {
+      // This will be retried. Unless there is a bug in the code,
+      // this should be just a "temporary error" (e.g. network down)
+      LOG.warn("Failed rollback attempt step " + state + " for merging the regions "
+          + RegionInfo.getShortNameToLog(regionsToMerge) + " in table " + getTableName(), e);
+      throw e;
+    }
+  }
+
+  /*
+   * Check whether we are in the state that can be rolled back
+   */
+  @Override
+  protected boolean isRollbackSupported(final MergeTableRegionsState state) {
+    switch (state) {
+      case MERGE_TABLE_REGIONS_POST_OPERATION:
+      case MERGE_TABLE_REGIONS_OPEN_MERGED_REGION:
+      case MERGE_TABLE_REGIONS_POST_MERGE_COMMIT_OPERATION:
+      case MERGE_TABLE_REGIONS_UPDATE_META:
+        // It is not safe to rollback in these states.
+        return false;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  @Override
+  protected MergeTableRegionsState getState(final int stateId) {
+    return MergeTableRegionsState.forNumber(stateId);
+  }
+
+  @Override
+  protected int getStateId(final MergeTableRegionsState state) {
+    return state.getNumber();
+  }
+
+  @Override
+  protected MergeTableRegionsState getInitialState() {
+    return MergeTableRegionsState.MERGE_TABLE_REGIONS_PREPARE;
+  }
+
+  @Override
+  protected void serializeStateData(ProcedureStateSerializer serializer)
+      throws IOException {
+    super.serializeStateData(serializer);
+
+    final MasterProcedureProtos.MergeTableRegionsStateData.Builder mergeTableRegionsMsg =
+        MasterProcedureProtos.MergeTableRegionsStateData.newBuilder()
+        .setUserInfo(MasterProcedureUtil.toProtoUserInfo(getUser()))
+        .setMergedRegionInfo(ProtobufUtil.toRegionInfo(mergedRegion))
+        .setForcible(force);
+    for (RegionInfo ri: regionsToMerge) {
+      mergeTableRegionsMsg.addRegionInfo(ProtobufUtil.toRegionInfo(ri));
+    }
+    serializer.serialize(mergeTableRegionsMsg.build());
+  }
+
+  @Override
+  protected void deserializeStateData(ProcedureStateSerializer serializer)
+      throws IOException {
+    super.deserializeStateData(serializer);
+
+    final MasterProcedureProtos.MergeTableRegionsStateData mergeTableRegionsMsg =
+        serializer.deserialize(MasterProcedureProtos.MergeTableRegionsStateData.class);
+    setUser(MasterProcedureUtil.toUserInfo(mergeTableRegionsMsg.getUserInfo()));
+
+    assert(mergeTableRegionsMsg.getRegionInfoCount() == 2);
+    regionsToMerge = new RegionInfo[mergeTableRegionsMsg.getRegionInfoCount()];
+    for (int i = 0; i < regionsToMerge.length; i++) {
+      regionsToMerge[i] = ProtobufUtil.toRegionInfo(mergeTableRegionsMsg.getRegionInfo(i));
+    }
+
+    mergedRegion = ProtobufUtil.toRegionInfo(mergeTableRegionsMsg.getMergedRegionInfo());
+  }
+
+  @Override
+  public void toStringClassDetails(StringBuilder sb) {
+    sb.append(getClass().getSimpleName());
+    sb.append(" table=");
+    sb.append(getTableName());
+    sb.append(", regions=");
+    sb.append(RegionInfo.getShortNameToLog(regionsToMerge));
+    sb.append(", force=");
+    sb.append(force);
+  }
+
+  @Override
+  protected LockState acquireLock(final MasterProcedureEnv env) {
+    if (env.getProcedureScheduler().waitRegions(this, getTableName(),
+        mergedRegion, regionsToMerge[0], regionsToMerge[1])) {
+      try {
+        LOG.debug(LockState.LOCK_EVENT_WAIT + " " + env.getProcedureScheduler().dumpLocks());
+      } catch (IOException e) {
+        // Ignore, just for logging
+      }
+      return LockState.LOCK_EVENT_WAIT;
+    }
+    return LockState.LOCK_ACQUIRED;
+  }
+
+  @Override
+  protected void releaseLock(final MasterProcedureEnv env) {
+    env.getProcedureScheduler().wakeRegions(this, getTableName(),
+      mergedRegion, regionsToMerge[0], regionsToMerge[1]);
+  }
+
+  @Override
+  protected boolean holdLock(MasterProcedureEnv env) {
+    return true;
+  }
+
+  @Override
+  public TableName getTableName() {
+    return mergedRegion.getTable();
+  }
+
+  @Override
+  public TableOperationType getTableOperationType() {
+    return TableOperationType.REGION_MERGE;
+  }
+
+  @Override
+  protected ProcedureMetrics getProcedureMetrics(MasterProcedureEnv env) {
+    return env.getAssignmentManager().getAssignmentManagerMetrics().getMergeProcMetrics();
+  }
+
+  /**
+   * Return list of regions that have recovered.edits... usually its an empty list.
+   * @param env the master env
+   * @throws IOException IOException
+   */
+  private List<RegionInfo> hasRecoveredEdits(final MasterProcedureEnv env) throws IOException {
+    List<RegionInfo> ris =  new ArrayList<RegionInfo>(regionsToMerge.length);
+    for (int i = 0; i < regionsToMerge.length; i++) {
+      RegionInfo ri = regionsToMerge[i];
+      if (SplitTableRegionProcedure.hasRecoveredEdits(env, ri)) {
+        ris.add(ri);
+      }
+    }
+    return ris;
+  }
+
+  /**
+   * Prepare merge and do some check
+   * @param env MasterProcedureEnv
+   * @throws IOException
+   */
+  private boolean prepareMergeRegion(final MasterProcedureEnv env) throws IOException {
+    // Fail if we are taking snapshot for the given table
+    TableName tn = regionsToMerge[0].getTable();
+    if (env.getMasterServices().getSnapshotManager().isTakingSnapshot(tn)) {
+      throw new MergeRegionException("Skip merging regions " +
+          RegionInfo.getShortNameToLog(regionsToMerge) + ", because we are snapshotting " + tn);
+    }
+    if (!env.getMasterServices().isSplitOrMergeEnabled(MasterSwitchType.MERGE)) {
+      String regionsStr = Arrays.deepToString(this.regionsToMerge);
+      LOG.warn("Merge switch is off! skip merge of " + regionsStr);
+      super.setFailure(getClass().getSimpleName(),
+          new IOException("Merge of " + regionsStr + " failed because merge switch is off"));
+      return false;
+    }
+    // See HBASE-21395, for 2.0.x and 2.1.x only.
+    // A safe fence here, if there is a table procedure going on, abort the merge.
+    // There some cases that may lead to table procedure roll back (more serious
+    // than roll back the merge procedure here), or the merged regions was brought online
+    // by the table procedure because of the race between merge procedure and table procedure
+    List<AbstractStateMachineTableProcedure> tableProcedures = env
+        .getMasterServices().getProcedures().stream()
+        .filter(p -> p instanceof AbstractStateMachineTableProcedure)
+        .map(p -> (AbstractStateMachineTableProcedure) p)
+        .filter(p -> p.getProcId() != this.getProcId() && p.getTableName()
+            .equals(regionsToMerge[0].getTable()) && !p.isFinished()
+            && TableQueue.requireTableExclusiveLock(p))
+        .collect(Collectors.toList());
+    if (tableProcedures != null && tableProcedures.size() > 0) {
+      throw new MergeRegionException(tableProcedures.get(0).toString()
+          + " is going on against the same table, abort the merge of " + this
+          .toString());
+    }
+
+    CatalogJanitor catalogJanitor = env.getMasterServices().getCatalogJanitor();
+    RegionStates regionStates = env.getAssignmentManager().getRegionStates();
+    for (RegionInfo ri: this.regionsToMerge) {
+      if (!catalogJanitor.cleanMergeQualifier(ri)) {
+        String msg = "Skip merging " + RegionInfo.getShortNameToLog(regionsToMerge) +
+            ", because parent " + RegionInfo.getShortNameToLog(ri) + " has a merge qualifier";
+        LOG.warn(msg);
+        throw new MergeRegionException(msg);
+      }
+      RegionState state = regionStates.getRegionState(ri.getEncodedName());
+      if (state == null) {
+        throw new UnknownRegionException("No state for " + RegionInfo.getShortNameToLog(ri));
+      }
+      if (!state.isOpened()) {
+        throw new MergeRegionException("Unable to merge regions that are not online: " + ri);
+      }
+      // Ask the remote regionserver if regions are mergeable. If we get an IOE, report it
+      // along with the failure, so we can see why regions are not mergeable at this time.
+      try {
+        if (!isMergeable(env, state)) {
+          return false;
+        }
+      } catch (IOException e) {
+        IOException ioe = new IOException(RegionInfo.getShortNameToLog(ri) + " NOT mergeable", e);
+        super.setFailure(getClass().getSimpleName(), ioe);
+        return false;
+      }
+    }
+
+    // Update region states to Merging
+    setRegionStateToMerging(env);
+    return true;
+  }
+
+  private boolean isMergeable(final MasterProcedureEnv env, final RegionState rs)
+  throws IOException {
+    GetRegionInfoResponse response =
+      Util.getRegionInfoResponse(env, rs.getServerName(), rs.getRegion());
+    return response.hasMergeable() && response.getMergeable();
+  }
+
+  /**
+   * Pre merge region action
+   * @param env MasterProcedureEnv
+   **/
+  private void preMergeRegions(final MasterProcedureEnv env) throws IOException {
+    final MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
+    if (cpHost != null) {
+      cpHost.preMergeRegionsAction(regionsToMerge, getUser());
+    }
+    // TODO: Clean up split and merge. Currently all over the place.
+    try {
+      env.getMasterServices().getMasterQuotaManager().onRegionMerged(this.mergedRegion);
+    } catch (QuotaExceededException e) {
+      env.getMasterServices().getRegionNormalizer().planSkipped(this.mergedRegion,
+          NormalizationPlan.PlanType.MERGE);
+      throw e;
+    }
+  }
+
+  /**
+   * Action after rollback a merge table regions action.
+   */
+  private void postRollBackMergeRegions(final MasterProcedureEnv env) throws IOException {
+    final MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
+    if (cpHost != null) {
+      cpHost.postRollBackMergeRegionsAction(regionsToMerge, getUser());
+    }
+  }
+
+  /**
+   * Set the region states to MERGING state
+   * @param env MasterProcedureEnv
+   */
+  public void setRegionStateToMerging(final MasterProcedureEnv env) {
+    // Set State.MERGING to regions to be merged
+    RegionStates regionStates = env.getAssignmentManager().getRegionStates();
+    for (RegionInfo ri: this.regionsToMerge) {
+      regionStates.getRegionStateNode(ri).setState(State.MERGING);
+    }
+  }
+
+  /**
+   * Create merged region.
+   * The way the merge works is that we make a 'merges' temporary
+   * directory in the FIRST parent region to merge (Do not change this without
+   * also changing the rollback where we look in this FIRST region for the
+   * merge dir). We then collect here references to all the store files in all
+   * the parent regions including those of the FIRST parent region into a
+   * subdirectory, named for the resultant merged region. We then call
+   * commitMergeRegion. It finds this subdirectory of storefile references
+   * and moves them under the new merge region (creating the region layout
+   * as side effect). After assign of the new merge region, we will run a
+   * compaction. This will undo the references but the reference files remain
+   * in place until the archiver runs (which it does on a period as a chore
+   * in the RegionServer that hosts the merge region -- see
+   * CompactedHFilesDischarger). Once the archiver has moved aside the
+   * no-longer used references, the merge region no longer has references.
+   * The catalog janitor will notice when it runs next and it will remove
+   * the old parent regions.
+   */
+  private void createMergedRegion(final MasterProcedureEnv env) throws IOException {
+    final MasterFileSystem mfs = env.getMasterServices().getMasterFileSystem();
+    final Path tabledir = FSUtils.getTableDir(mfs.getRootDir(), regionsToMerge[0].getTable());
+    final FileSystem fs = mfs.getFileSystem();
+    HRegionFileSystem mergeRegionFs = null;
+    for (RegionInfo ri: this.regionsToMerge) {
+      HRegionFileSystem regionFs = HRegionFileSystem.openRegionFromFileSystem(
+          env.getMasterConfiguration(), fs, tabledir, ri, false);
+      if (mergeRegionFs == null) {
+        mergeRegionFs = regionFs;
+        mergeRegionFs.createMergesDir();
+      }
+      mergeStoreFiles(env, regionFs, mergeRegionFs.getMergesDir());
+    }
+    assert mergeRegionFs != null;
+    mergeRegionFs.commitMergedRegion(mergedRegion);
+
+    // Prepare to create merged regions
+    env.getAssignmentManager().getRegionStates().
+        getOrCreateRegionStateNode(mergedRegion).setState(State.MERGING_NEW);
+  }
+
+  /**
+   * Create reference file(s) to parent region hfiles in the <code>mergeDir</code>
+   * @param regionFs merge parent region file system
+   * @param mergeDir the temp directory in which we are accumulating references.
+   */
+  private void mergeStoreFiles(final MasterProcedureEnv env, final HRegionFileSystem regionFs,
+      final Path mergeDir) throws IOException {
+    final MasterFileSystem mfs = env.getMasterServices().getMasterFileSystem();
+    final Configuration conf = env.getMasterConfiguration();
+    final TableDescriptor htd = env.getMasterServices().getTableDescriptors().get(getTableName());
+    for (ColumnFamilyDescriptor hcd : htd.getColumnFamilies()) {
+      String family = hcd.getNameAsString();
+      final Collection<StoreFileInfo> storeFiles = regionFs.getStoreFiles(family);
+      if (storeFiles != null && storeFiles.size() > 0) {
+        for (StoreFileInfo storeFileInfo : storeFiles) {
+          // Create reference file(s) to parent region file here in mergedDir.
+          // As this procedure is running on master, use CacheConfig.DISABLED means
+          // don't cache any block.
+          regionFs.mergeStoreFile(mergedRegion, family, new HStoreFile(mfs.getFileSystem(),
+              storeFileInfo, conf, CacheConfig.DISABLED, hcd.getBloomFilterType(), true),
+            mergeDir);
+        }
+      }
+    }
+  }
+
+  /**
+   * Clean up a merged region on rollback after failure.
+   */
+  private void cleanupMergedRegion(final MasterProcedureEnv env) throws IOException {
+    final MasterFileSystem mfs = env.getMasterServices().getMasterFileSystem();
+    TableName tn = this.regionsToMerge[0].getTable();
+    final Path tabledir = FSUtils.getTableDir(mfs.getRootDir(), tn);
+    final FileSystem fs = mfs.getFileSystem();
+    // See createMergedRegion above where we specify the merge dir as being in the
+    // FIRST merge parent region.
+    HRegionFileSystem regionFs = HRegionFileSystem.openRegionFromFileSystem(
+      env.getMasterConfiguration(), fs, tabledir, regionsToMerge[0], false);
+    regionFs.cleanupMergedRegion(mergedRegion);
+  }
+
+  /**
+   * Rollback close regions
+   * @param env MasterProcedureEnv
+   **/
+  private void rollbackCloseRegionsForMerge(final MasterProcedureEnv env) throws IOException {
+    // Check whether the region is closed; if so, open it in the same server
+    final int regionReplication = getRegionReplication(env);
+    final ServerName serverName = getServerName(env);
+
+    AssignProcedure[] procs =
+        createAssignProcedures(regionReplication, env, Arrays.asList(regionsToMerge), serverName);
+    env.getMasterServices().getMasterProcedureExecutor().submitProcedures(procs);
+  }
+  
+  private AssignProcedure[] createAssignProcedures(final int regionReplication,
+      final MasterProcedureEnv env, final List<RegionInfo> hris, final ServerName serverName) {
+    final AssignProcedure[] procs = new AssignProcedure[hris.size() * regionReplication];
+    int procsIdx = 0;
+    for (int i = 0; i < hris.size(); ++i) {
+      // create procs for the primary region with the target server.
+      final RegionInfo hri = RegionReplicaUtil.getRegionInfoForReplica(hris.get(i), 0);
+      procs[procsIdx++] = env.getAssignmentManager().createAssignProcedure(hri, serverName);
+    }
+    if (regionReplication > 1) {
+      List<RegionInfo> regionReplicas =
+          new ArrayList<RegionInfo>(hris.size() * (regionReplication - 1));
+      for (int i = 0; i < hris.size(); ++i) {
+        // We don't include primary replica here
+        for (int j = 1; j < regionReplication; ++j) {
+          regionReplicas.add(RegionReplicaUtil.getRegionInfoForReplica(hris.get(i), j));
+        }
+      }
+      // for the replica regions exclude the primary region's server and call LB's roundRobin
+      // assignment
+      AssignProcedure[] replicaAssignProcs = env.getAssignmentManager()
+          .createRoundRobinAssignProcedures(regionReplicas, Collections.singletonList(serverName));
+      for (AssignProcedure proc : replicaAssignProcs) {
+        procs[procsIdx++] = proc;
+      }
+    }
+    return procs;
+  }
+
+  private UnassignProcedure[] createUnassignProcedures(final MasterProcedureEnv env,
+      final int regionReplication) {
+    final UnassignProcedure[] procs =
+        new UnassignProcedure[regionsToMerge.length * regionReplication];
+    int procsIdx = 0;
+    for (int i = 0; i < regionsToMerge.length; ++i) {
+      for (int j = 0; j < regionReplication; ++j) {
+        final RegionInfo hri = RegionReplicaUtil.getRegionInfoForReplica(regionsToMerge[i], j);
+        procs[procsIdx++] = env.getAssignmentManager().
+            createUnassignProcedure(hri, null, true, !RegionReplicaUtil.isDefaultReplica(hri));
+      }
+    }
+    return procs;
+  }
+
+  private AssignProcedure[] createAssignProcedures(final MasterProcedureEnv env,
+      final int regionReplication) {
+    final ServerName targetServer = getServerName(env);
+    return createAssignProcedures(regionReplication, env, Collections.singletonList(mergedRegion),
+      targetServer);
+  }
+
+  private int getRegionReplication(final MasterProcedureEnv env) throws IOException {
+    return env.getMasterServices().getTableDescriptors().get(getTableName()).
+        getRegionReplication();
+  }
+
+  /**
+   * Post merge region action
+   * @param env MasterProcedureEnv
+   **/
+  private void preMergeRegionsCommit(final MasterProcedureEnv env) throws IOException {
+    final MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
+    if (cpHost != null) {
+      @MetaMutationAnnotation
+      final List<Mutation> metaEntries = new ArrayList<>();
+      cpHost.preMergeRegionsCommit(regionsToMerge, metaEntries, getUser());
+      try {
+        for (Mutation p : metaEntries) {
+          RegionInfo.parseRegionName(p.getRow());
+        }
+      } catch (IOException e) {
+        LOG.error("Row key of mutation from coprocessor is not parsable as region name. "
+          + "Mutations from coprocessor should only be for hbase:meta table.", e);
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * Add merged region to META and delete original regions.
+   */
+  private void updateMetaForMergedRegions(final MasterProcedureEnv env) throws IOException {
+    env.getAssignmentManager().markRegionAsMerged(mergedRegion, getServerName(env),
+        this.regionsToMerge);
+  }
+
+  /**
+   * Post merge region action
+   * @param env MasterProcedureEnv
+   **/
+  private void postMergeRegionsCommit(final MasterProcedureEnv env) throws IOException {
+    final MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
+    if (cpHost != null) {
+      cpHost.postMergeRegionsCommit(regionsToMerge, mergedRegion, getUser());
+    }
+  }
+
+  /**
+   * Post merge region action
+   * @param env MasterProcedureEnv
+   **/
+  private void postCompletedMergeRegions(final MasterProcedureEnv env) throws IOException {
+    final MasterCoprocessorHost cpHost = env.getMasterCoprocessorHost();
+    if (cpHost != null) {
+      cpHost.postCompletedMergeRegionsAction(regionsToMerge, mergedRegion, getUser());
+    }
+  }
+
+  /**
+   * The procedure could be restarted from a different machine. If the variable is null, we need to
+   * retrieve it.
+   * @param env MasterProcedureEnv
+   * @return serverName
+   */
+  private ServerName getServerName(final MasterProcedureEnv env) {
+    if (regionLocation == null) {
+      regionLocation = env.getAssignmentManager().getRegionStates().
+          getRegionServerOfRegion(regionsToMerge[0]);
+      // May still be null here but return null and let caller deal.
+      // Means we lost the in-memory-only location. We are in recovery
+      // or so. The caller should be able to deal w/ a null ServerName.
+      // Let them go to the Balancer to find one to use instead.
+    }
+    return regionLocation;
+  }
+
+  private void writeMaxSequenceIdFile(MasterProcedureEnv env) throws IOException {
+    MasterFileSystem fs = env.getMasterFileSystem();
+    long maxSequenceId = -1L;
+    for (RegionInfo region : regionsToMerge) {
+      maxSequenceId =
+          Math.max(maxSequenceId, WALSplitter.getMaxRegionSequenceId(env.getMasterConfiguration(),
+            region, fs::getFileSystem, fs::getWALFileSystem));
+    }
+    if (maxSequenceId > 0) {
+      WALSplitter.writeRegionSequenceIdFile(fs.getWALFileSystem(),
+        getWALRegionDir(env, mergedRegion), maxSequenceId);
+    }
+  }
+
+  /**
+   * @return The merged region. Maybe be null if called to early or we failed.
+   */
+  @VisibleForTesting
+  RegionInfo getMergedRegion() {
+    return this.mergedRegion;
+  }
+
+  @Override
+  protected boolean abort(MasterProcedureEnv env) {
+    // Abort means rollback. We can't rollback all steps. HBASE-18018 added abort to all
+    // Procedures. Here is a Procedure that has a PONR and cannot be aborted once it enters this
+    // range of steps; what do we do for these should an operator want to cancel them? HBASE-20022.
+    return isRollbackSupported(getCurrentState()) && super.abort(env);
+  }
+}

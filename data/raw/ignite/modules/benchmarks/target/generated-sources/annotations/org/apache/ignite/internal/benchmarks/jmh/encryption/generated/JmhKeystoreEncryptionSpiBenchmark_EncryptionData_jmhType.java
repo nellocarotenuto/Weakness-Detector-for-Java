@@ -1,0 +1,4 @@
+package org.apache.ignite.internal.benchmarks.jmh.encryption.generated;
+public class JmhKeystoreEncryptionSpiBenchmark_EncryptionData_jmhType extends JmhKeystoreEncryptionSpiBenchmark_EncryptionData_jmhType_B3 {
+}
+

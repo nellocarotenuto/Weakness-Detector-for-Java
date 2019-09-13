@@ -1,0 +1,72 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.syncope.core.persistence.api.entity;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import org.apache.syncope.common.lib.types.ConnConfProperty;
+import org.apache.syncope.common.lib.types.ConnectorCapability;
+import org.apache.syncope.core.persistence.api.entity.resource.ExternalResource;
+
+public interface ConnInstance extends Entity {
+
+    Realm getAdminRealm();
+
+    void setAdminRealm(Realm adminRealm);
+
+    void setConnectorName(String connectorName);
+
+    String getConnectorName();
+
+    void setDisplayName(String displayName);
+
+    String getDisplayName();
+
+    void setLocation(String location);
+
+    String getLocation();
+
+    void setPoolConf(ConnPoolConf poolConf);
+
+    ConnPoolConf getPoolConf();
+
+    void setVersion(String version);
+
+    String getVersion();
+
+    void setBundleName(String bundleName);
+
+    String getBundleName();
+
+    Set<ConnectorCapability> getCapabilities();
+
+    boolean add(ExternalResource resource);
+
+    List<? extends ExternalResource> getResources();
+
+    void setConf(Collection<ConnConfProperty> conf);
+
+    Set<ConnConfProperty> getConf();
+
+    void setConnRequestTimeout(Integer timeout);
+
+    Integer getConnRequestTimeout();
+
+}
