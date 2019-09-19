@@ -19,7 +19,6 @@ package org.apache.camel.examples.cluster;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-//CHECKSTYLE:OFF
 /**
  * A sample Spring Boot application that starts the Atomix bootstrap node.
  */
@@ -33,4 +32,3 @@ public class ClusterBootstrap {
         SpringApplication.run(ClusterBootstrap.class, args);
     }
 }
-//CHECKSTYLE:ON

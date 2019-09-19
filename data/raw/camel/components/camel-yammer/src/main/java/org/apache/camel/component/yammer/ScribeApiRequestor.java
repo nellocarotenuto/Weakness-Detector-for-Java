@@ -40,7 +40,7 @@ public class ScribeApiRequestor implements ApiRequestor {
         OAuthRequest request = new OAuthRequest(verb, url);
         request.addQuerystringParameter(OAuthConstants.ACCESS_TOKEN, apiAccessToken);
         
-        // For more details on the “Bearer” token refer to http://tools.ietf.org/html/draft-ietf-oauth-v2-bearer-23
+        // For more details on the "Bearer" token refer to http://tools.ietf.org/html/draft-ietf-oauth-v2-bearer-23
         StringBuilder sb = new StringBuilder();
         sb.append("Bearer ");
         sb.append(apiAccessToken);

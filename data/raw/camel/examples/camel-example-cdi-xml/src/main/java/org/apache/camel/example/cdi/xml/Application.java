@@ -53,18 +53,12 @@ public class Application {
         .setHeader("location", simple("exchangeProperty.CamelFailureRouteId"));
 
     void login(@Observes @Initialized(ApplicationScoped.class) Object event) {
-        System.out.println(
-              "████████╗██╗  ██╗███████╗    ███╗   ███╗ █████╗ ████████╗██████╗ ██╗██╗  ██╗\n"
-            + "╚══██╔══╝██║  ██║██╔════╝    ████╗ ████║██╔══██╗╚══██╔══╝██╔══██╗██║╚██╗██╔╝\n"
-            + "   ██║   ███████║█████╗      ██╔████╔██║███████║   ██║   ██████╔╝██║ ╚███╔╝ \n"
-            + "   ██║   ██╔══██║██╔══╝      ██║╚██╔╝██║██╔══██║   ██║   ██╔══██╗██║ ██╔██╗ \n"
-            + "   ██║   ██║  ██║███████╗    ██║ ╚═╝ ██║██║  ██║   ██║   ██║  ██║██║██╔╝ ██╗\n"
-            + "   ╚═╝   ╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝");
+        System.out.println("The matrix");
     }
 
     @Handler
     public String terminal(@Body String body) {
-        return "Matrix » " + body;
+        return "Matrix > " + body;
     }
 
     void logout(@Observes @Named("terminal") RouteStoppedEvent event) {
@@ -78,10 +72,6 @@ public class Application {
     }
 
     void shutdown(@Observes @Destroyed(ApplicationScoped.class) Object event) {
-        System.out.println(
-              " _____ _       _     _                     \n"
-            + "|   __| |_ _ _| |_ _| |___ _ _ _ ___       \n"
-            + "|__   |   | | |  _| . | . | | | |   |_ _ _ \n"
-            + "|_____|_|_|___|_| |___|___|_____|_|_|_|_|_|");
+        System.out.println("Shutdown");
     }
 }
