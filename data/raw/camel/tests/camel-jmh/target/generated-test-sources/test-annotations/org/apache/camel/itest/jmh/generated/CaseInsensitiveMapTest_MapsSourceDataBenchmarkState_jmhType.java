@@ -1,0 +1,4 @@
+package org.apache.camel.itest.jmh.generated;
+public class CaseInsensitiveMapTest_MapsSourceDataBenchmarkState_jmhType extends CaseInsensitiveMapTest_MapsSourceDataBenchmarkState_jmhType_B3 {
+}
+

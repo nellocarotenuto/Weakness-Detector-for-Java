@@ -1,0 +1,4 @@
+package org.apache.camel.itest.jmh.generated;
+public class TypeConverterTest_BenchmarkCamelContextState_jmhType extends TypeConverterTest_BenchmarkCamelContextState_jmhType_B3 {
+}
+
