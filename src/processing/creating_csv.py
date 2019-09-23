@@ -8,6 +8,7 @@ import src.preparation.labeler as labeler
 
 
 def create_lables():
+    print("Creating lables...\n")
     output = open(PROCESSED_DATA_DIR + '/output.csv', 'w')
     labels = bow.bag_of_words_total()
 
@@ -22,26 +23,28 @@ def create_lables():
 
 
 def compute_values(vocabulary):
-    output = open(PROCESSED_DATA_DIR + '/prova.csv', 'a')
+    print("Generating values...\n")
+    output = open(PROCESSED_DATA_DIR + '/output.csv', 'a')
     for r, d, f in os.walk(RAW_DATA_DIR):
+        print(d)
         for file in f:
             if '.java' in file:
                 bag_of_words = bow.bag_of_words_per_file(r, file)
-                print(bag_of_words)
                 vocabulary.update(bag_of_words.elements())
                 for value in vocabulary.values():
                     output.write('{},'.format(value))
 
                 filepath = os.path.join(r, file)
                 if labeler.is_weak(filepath):
-                    output.write('1')
+                    output.write('True')
+                else:
+                    output.write('False')
 
                 output.write('\n')
 
                 vocabulary = reset_vocabulary(vocabulary)
 
     print('\n')
-    print(vocabulary)
     output.close()
 
 
