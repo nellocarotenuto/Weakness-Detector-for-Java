@@ -7,117 +7,93 @@ import src.preparation.labeler as labeler
 
 RAW_DATA_DIR = "../../data/raw"
 
+__files_count = {"safe": 0, "weak": 0}
+__lines_count = {"safe": 0, "weak": 0}
+__tokens_count = {"safe": 0, "weak": 0}
+
 
 def __count_file_lines(file):
     """
-        Counts the total number of rows in a file.
+        Counts the total number of rows and tokens in a file.
 
         :param file: The file to evaluate
         :type file: str
 
         :raises FileNotFoundError: If the file parser parameter doesn't exist
 
-        :return: The number of rows in the file specified as parameter
-        :rtype: int
-    """
-
-    num_lines = 0
-    with open(file, 'r') as f:
-        for line in f:
-            num_lines += 1
-
-    return num_lines
-
-
-def __count_file_tokens(file):
-    """
-        Counts the total number of token in a file.
-
-        :param file: The file to evaluate
-        :type file: str
-
-        :raises FileNotFoundError: If the file parser parameter doesn't exist
-
-        :return: The number of token in file specified as parameter
-        :rtype: int
+        :return: The number of rows and the number of tokens in the file specified as parameter
+        :rtype: int, int
     """
 
     delimiters = "; |;|, |\.|: |{|{ |}|} |[|[ |]|] |\(|\( |\)|\) |\?|!|<|>|\+|=|&|^|%|-|~|:|/|\(|\*|\n|\"| "
+    num_lines = 0
+    num_tokens = 0
     with open(file, 'r') as f:
-        f = f.read()
-        result = re.split(delimiters, f)
-        result = list(filter(None, result))
+        for line in f:
+            num_lines += 1
+            tokens = re.split(delimiters, line)
+            tokens = list(filter(None, tokens))
+            num_tokens += len(tokens)
 
-    return len(result)
+    return num_lines, num_tokens
 
 
 def count_files():
     """
-        Counts the total number of Java file.
+        Returns the dictionary containing the weak and safe file number.
 
         :return: The number of files safe and weak
-        :rtype: int, int
+        :rtype: dict
     """
 
-    raw_data_path = os.path.relpath(RAW_DATA_DIR)
-    weak_files = 0
-    safe_files = 0
-
-    for path, dirs, files in os.walk(raw_data_path):
-        # Search for .java files in raw data directory
-        for filename in fnmatch.filter(files, "*.java"):
-            filepath = os.path.join(path, filename)
-            if labeler.is_weak(filepath):
-                weak_files += 1
-            else:
-                safe_files += 1
-
-    return safe_files, weak_files
+    return __files_count
 
 
 def count_lines():
     """
-        Counts the total number of lines safe and weak.
+        Returns the dictionary containing the weak and safe numbers of line.
 
         :return: The number of lines safe and weak
-        :rtype: int, int
+        :rtype: dict
     """
 
-    raw_data_path = os.path.relpath(RAW_DATA_DIR)
-    weak_lines = 0
-    safe_lines = 0
-
-    for path, dirs, files in os.walk(raw_data_path):
-        # Search for .java files in raw data directory
-        for filename in fnmatch.filter(files, "*.java"):
-            filepath = os.path.join(path, filename)
-            if labeler.is_weak(filepath):
-                weak_lines += __count_file_lines(filepath)
-            else:
-                safe_lines += __count_file_lines(filepath)
-
-    return safe_lines, weak_lines
+    return __lines_count
 
 
 def count_tokens():
     """
-        Counts the total number of tokens safe and weak.
+        Returns the dictionary containing the weak and safe tokens number.
 
         :return: The number of tokens safe and weak
-        :rtype: int, int
+        :rtype: dict
     """
 
+    return __tokens_count
+
+
+def __extract_stats():
+    """
+        This function counts the number of safe and weak files, lines of code and tokens in a file
+    """
+
+    global __files_count
+    global __lines_count
+    global __tokens_count
+
     raw_data_path = os.path.relpath(RAW_DATA_DIR)
-    weak_tokens = 0
-    safe_tokens = 0
 
     for path, dirs, files in os.walk(raw_data_path):
         # Search for .java files in raw data directory
         for filename in fnmatch.filter(files, "*.java"):
             filepath = os.path.join(path, filename)
             if labeler.is_weak(filepath):
-                weak_tokens += __count_file_tokens(filepath)
+                __files_count["weak"] += 1
+                lines_weak, tokens_weak = __count_file_lines(filepath)
+                __lines_count["weak"] += lines_weak
+                __tokens_count["weak"] += tokens_weak
             else:
-                safe_tokens += __count_file_tokens(filepath)
+                __files_count["safe"] += 1
+                lines_safe, tokens_safe = __count_file_lines(filepath)
+                __lines_count["safe"] += lines_safe
+                __tokens_count["safe"] += tokens_safe
 
-    return safe_tokens, weak_tokens
