@@ -1,8 +1,7 @@
 from collections import Counter
 
-import javalang.tree as ast
-import javalang.parse as parser
-
+import libs.javalang.tree as ast
+import libs.javalang.parse as parser
 
 # Package declarations
 PACKAGE_DECLARATIONS = "PACKAGE_DECLARATIONS"
@@ -54,6 +53,7 @@ BLOCK_STATEMENTS = "BLOCK_STATEMENTS"
 ANNOTATIONS = "ANNOTATIONS"
 VARIABLE_DECLARATIONS = "VARIABLE_DECLARATIONS"
 FINAL_VARIABLE_DECLARATIONS = "FINAL_VARIABLE_DECLARATIONS"
+VOLATILE_VARIABLE_DECLARATIONS = "VOLATILE_VARIABLE_DECLARATIONS"
 METHOD_INVOCATIONS = "METHOD_INVOCATIONS"
 
 # Misc
@@ -201,6 +201,8 @@ def analyze(file):
 
             if "final" in node.modifiers:
                 counter[FINAL_VARIABLE_DECLARATIONS] += 1
+            elif "volatile" in node.modifiers:
+                counter[VOLATILE_VARIABLE_DECLARATIONS] += 1
 
         elif isinstance(node, ast.Invocation):
             counter[METHOD_INVOCATIONS] += 1
