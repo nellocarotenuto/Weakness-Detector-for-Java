@@ -10,8 +10,10 @@ import src.preparation.labeler as labeler
 import src.processing.analyzer as analyzer
 
 
-RAW_DATA_DIR = "../../data/raw/"
-PROCESSED_DATA_DIR = "../../data/processed/metircs"
+RAW_DATA_DIR = "../../data/raw"
+PROCESSED_DATA_DIR = "../../data/processed"
+
+METRICS_DIR = "metrics"
 
 CSV_DIR = "csv"
 PKL_DIR = "pkl"
@@ -21,39 +23,45 @@ METRICS = "__metrics"
 
 
 def load_features():
+    """
+        Counts the metrics for every file in every project inside the raw data directory.
+
+        :return: The metrics of the whole dataset
+        :rtype: DataFrame
+    """
+
     # Read the full data frame from pickle if generated
-    if os.path.exists(f"{PROCESSED_DATA_DIR}/{PKL_DIR}/{METRICS}.pkl"):
-        return pandas.read_pickle(f"{PROCESSED_DATA_DIR}/{PKL_DIR}/{METRICS}.pkl")
+    if os.path.exists(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{METRICS}.pkl"):
+        return pandas.read_pickle(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{METRICS}.pkl")
 
     projects = [project for project in os.listdir(RAW_DATA_DIR)]
 
     # Create the needed directories if they don't exist
-    if not os.path.exists(PROCESSED_DATA_DIR):
-        os.mkdir(PROCESSED_DATA_DIR)
-        os.mkdir(f"{PROCESSED_DATA_DIR}/{CSV_DIR}")
-        os.mkdir(f"{PROCESSED_DATA_DIR}/{PKL_DIR}")
+    if not os.path.exists(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}"):
+        os.mkdir(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}")
+        os.mkdir(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{CSV_DIR}")
+        os.mkdir(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}")
 
     # Generate the CSV files for each project they haven't been generated yet
     for project in projects:
-        if not os.path.exists(f"{PROCESSED_DATA_DIR}/{CSV_DIR}/{project}.csv"):
+        if not os.path.exists(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{CSV_DIR}/{project}.csv"):
             __generate_csv(project)
 
     # Generate pickles to speed up loading times
     for project in projects:
-        if not os.path.exists(f"{PROCESSED_DATA_DIR}/{PKL_DIR}/{project}.pkl"):
-            data_frame = pandas.read_csv(f"{PROCESSED_DATA_DIR}/{CSV_DIR}/{project}.csv", dtype=int16)
-            data_frame.to_pickle(f"{PROCESSED_DATA_DIR}/{PKL_DIR}/{project}.pkl")
+        if not os.path.exists(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{project}.pkl"):
+            data_frame = pandas.read_csv(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{CSV_DIR}/{project}.csv", dtype=int16)
+            data_frame.to_pickle(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{project}.pkl")
 
     project_data_frames = {}
 
-    for pkl_file in os.listdir(f"{PROCESSED_DATA_DIR}/{PKL_DIR}"):
-        project_name = pkl_file[0:pkl_file.find(".pkl")]
-        project_data_frames[project_name] = pandas.read_pickle(f"{PROCESSED_DATA_DIR}/{PKL_DIR}/{pkl_file}")
+    for project in projects:
+        project_data_frames[project] = pandas.read_pickle(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{project}.pkl")
 
     data_frames_to_concat = list(project_data_frames.values())
 
     metrics = pandas.concat(data_frames_to_concat, ignore_index=True, sort=False).astype(int16)
-    metrics.to_pickle(f"{PROCESSED_DATA_DIR}/{PKL_DIR}/{METRICS}.pkl")
+    metrics.to_pickle(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{METRICS}.pkl")
 
     return metrics
 
@@ -73,7 +81,7 @@ def __generate_csv_header():
             file_words = __compute_file_metrics(filepath)
             common_header.update(list(file_words.keys()))
 
-    with open(f"{PROCESSED_DATA_DIR}/{CSV_DIR}/{HEADER}.csv", newline='', mode='w') as csv_file:
+    with open(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{CSV_DIR}/{HEADER}.csv", newline='', mode='w') as csv_file:
         writer = csv.writer(csv_file, delimiter=',')
         writer.writerow(list(common_header))
 
@@ -102,7 +110,7 @@ def __generate_csv(project):
 
             total_metrics.update(file_metrics)
 
-    with open(f"{PROCESSED_DATA_DIR}/{CSV_DIR}/{project}.csv", newline='', mode='w') as csv_file:
+    with open(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{CSV_DIR}/{project}.csv", newline='', mode='w') as csv_file:
         writer = csv.DictWriter(csv_file, delimiter=',', fieldnames=list(total_metrics.keys()), restval=0)
         writer.writeheader()
 
@@ -133,5 +141,3 @@ def __compute_file_metrics(filepath):
 
     return file_metrics
 
-
-print(load_features().shape)

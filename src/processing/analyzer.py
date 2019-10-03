@@ -99,20 +99,21 @@ def analyze(file):
             elif type(node) is ast.AnnotationDeclaration:
                 counter[ANNOTATION_DECLARATIONS] += 1
 
-            if "private" in node.modifiers:
-                counter[PRIVATE_TYPE_DECLARATIONS] += 1
-            elif "protected" in node.modifiers:
-                counter[PROTECTED_TYPE_DECLARATIONS] += 1
-            elif "public" in node.modifiers:
-                counter[PUBLIC_TYPE_DECLARATIONS] += 1
+            if node.modifiers:
+                if "private" in node.modifiers:
+                    counter[PRIVATE_TYPE_DECLARATIONS] += 1
+                elif "protected" in node.modifiers:
+                    counter[PROTECTED_TYPE_DECLARATIONS] += 1
+                elif "public" in node.modifiers:
+                    counter[PUBLIC_TYPE_DECLARATIONS] += 1
 
-            if "static" in node.modifiers:
-                counter[STATIC_TYPE_DECLARATIONS] += 1
+                if "static" in node.modifiers:
+                    counter[STATIC_TYPE_DECLARATIONS] += 1
 
-            if "abstract" in node.modifiers:
-                counter[ABSTRACT_TYPE_DECLARATIONS] += 1
-            elif "final" in node.modifiers:
-                counter[FINAL_TYPE_DECLARATIONS] += 1
+                if "abstract" in node.modifiers:
+                    counter[ABSTRACT_TYPE_DECLARATIONS] += 1
+                elif "final" in node.modifiers:
+                    counter[FINAL_TYPE_DECLARATIONS] += 1
 
             if type(node) is ast.ClassDeclaration or type(node) is ast.InterfaceDeclaration:
                 if node.type_parameters:
@@ -131,15 +132,16 @@ def analyze(file):
         elif type(node) is ast.MethodDeclaration:
             counter[METHOD_DECLARATIONS] += 1
 
-            if "private" in node.modifiers:
-                counter[PRIVATE_METHOD_DECLARATIONS] += 1
-            elif "protected" in node.modifiers:
-                counter[PROTECTED_METHOD_DECLARATIONS] += 1
-            elif "public" in node.modifiers:
-                counter[PUBLIC_METHOD_DECLARATIONS] += 1
+            if node.modifiers:
+                if "private" in node.modifiers:
+                    counter[PRIVATE_METHOD_DECLARATIONS] += 1
+                elif "protected" in node.modifiers:
+                    counter[PROTECTED_METHOD_DECLARATIONS] += 1
+                elif "public" in node.modifiers:
+                    counter[PUBLIC_METHOD_DECLARATIONS] += 1
 
-            if "static" in node.modifiers:
-                counter[STATIC_METHOD_DECLARATIONS] += 1
+                if "static" in node.modifiers:
+                    counter[STATIC_METHOD_DECLARATIONS] += 1
 
             if node.throws:
                 counter[EXCEPTION_METHOD_DECLARATIONS] += 1
@@ -199,10 +201,11 @@ def analyze(file):
 
             counter[type_name] += 1
 
-            if "final" in node.modifiers:
-                counter[FINAL_VARIABLE_DECLARATIONS] += 1
-            elif "volatile" in node.modifiers:
-                counter[VOLATILE_VARIABLE_DECLARATIONS] += 1
+            if node.modifiers:
+                if "final" in node.modifiers:
+                    counter[FINAL_VARIABLE_DECLARATIONS] += 1
+                elif "volatile" in node.modifiers:
+                    counter[VOLATILE_VARIABLE_DECLARATIONS] += 1
 
         elif isinstance(node, ast.Invocation):
             counter[METHOD_INVOCATIONS] += 1
