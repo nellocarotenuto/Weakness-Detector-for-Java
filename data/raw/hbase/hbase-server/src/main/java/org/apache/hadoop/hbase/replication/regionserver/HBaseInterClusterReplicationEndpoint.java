@@ -220,7 +220,7 @@ public class HBaseInterClusterReplicationEndpoint extends HBaseReplicationEndpoi
     int numSinks = Math.max(replicationSinkMgr.getNumSinks(), 1);
     int n = Math.min(Math.min(this.maxThreads, entries.size() / 100 + 1), numSinks);
     List<List<Entry>> entryLists =
-        Stream.generate(ArrayList<Entry>::new).limit(n).collect(Collectors.toList());
+        Stream.generate(ArrayList::new).limit(n).collect(Collectors.toList());
     int[] sizes = new int[n];
     for (Entry e : entries) {
       int index = Math.abs(Bytes.hashCode(e.getKey().getEncodedRegionName()) % n);

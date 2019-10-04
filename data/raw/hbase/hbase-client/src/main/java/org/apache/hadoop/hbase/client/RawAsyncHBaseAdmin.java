@@ -1062,7 +1062,7 @@ class RawAsyncHBaseAdmin implements AsyncAdmin {
             locations.stream().filter(l -> l.getRegion() != null)
               .filter(l -> !l.getRegion().isOffline()).filter(l -> l.getServerName() != null)
               .map(l -> compact(l.getServerName(), l.getRegion(), major, columnFamily))
-              .toArray(CompletableFuture<?>[]::new);
+              .toArray(CompletableFuture[]::new);
           // future complete unless all of the compact futures are completed.
           addListener(CompletableFuture.allOf(compactFutures), (ret, err2) -> {
             if (err2 != null) {

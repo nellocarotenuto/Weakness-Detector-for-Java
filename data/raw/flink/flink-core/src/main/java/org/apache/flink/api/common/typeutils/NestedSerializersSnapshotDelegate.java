@@ -196,7 +196,7 @@ public class NestedSerializersSnapshotDelegate {
 
 		final TypeSerializerSnapshot<?>[] nestedSnapshots = serializersAndSnapshots.stream()
 				.map(t -> t.f1)
-				.toArray(TypeSerializerSnapshot<?>[]::new);
+				.toArray(TypeSerializerSnapshot[]::new);
 
 		return new NestedSerializersSnapshotDelegate(nestedSnapshots);
 	}
