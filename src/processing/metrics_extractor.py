@@ -60,7 +60,7 @@ def load_features():
 
     data_frames_to_concat = list(project_data_frames.values())
 
-    metrics = pandas.concat(data_frames_to_concat, ignore_index=True, sort=False).astype(int16)
+    metrics = pandas.concat(data_frames_to_concat, ignore_index=True, sort=False).fillna(0).astype(int16)
     metrics.to_pickle(f"{PROCESSED_DATA_DIR}/{METRICS_DIR}/{PKL_DIR}/{METRICS}.pkl")
 
     return metrics
