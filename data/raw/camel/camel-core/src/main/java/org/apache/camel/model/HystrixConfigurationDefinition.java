@@ -245,7 +245,7 @@ public class HystrixConfigurationDefinition extends HystrixConfigurationCommon {
     /**
      * This property sets the duration of the statistical rolling window, in milliseconds. This is how long metrics are kept for the thread pool.
      *
-     * The window is divided into buckets and rolls by those increments.
+     * The window is divided into buckets and “rolls” by those increments.
      */
     public HystrixConfigurationDefinition metricsRollingStatisticalWindowInMilliseconds(Integer metricsRollingStatisticalWindowInMilliseconds) {
         setMetricsRollingStatisticalWindowInMilliseconds(metricsRollingStatisticalWindowInMilliseconds);

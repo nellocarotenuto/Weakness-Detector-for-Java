@@ -19,6 +19,7 @@ package org.foo;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+//CHECKSTYLE:OFF
 @SpringBootApplication
 public class PetStoreApplication {
 
@@ -30,3 +31,4 @@ public class PetStoreApplication {
     }
 
 }
+//CHECKSTYLE:ON
