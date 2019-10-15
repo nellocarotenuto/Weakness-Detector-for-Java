@@ -31,7 +31,7 @@ def is_weak(file):
 
 def __init_weak_files_list():
     """
-        Initializes the weak files list at module level in order to avoid loading it every time.
+        Initializes the weak files set at module level in order to avoid loading it every time.
     """
     global __weak_files_list
 
@@ -41,14 +41,14 @@ def __init_weak_files_list():
 
 def __list_weak_files():
     """
-        This function evaluates the XML reports on our data and returns the list of vulnerable files inside the dataset.
+        This function evaluates the XML reports on our data and returns the set of vulnerable files inside the dataset.
 
-        :return: The list of vulnerable files
-        :rtype: list of str
+        :return: The set of vulnerable files
+        :rtype: set of str
     """
-    weak_files = []
+    weak_files = set()
 
-    raw_data_path = os.path.abspath(RAW_DATA_DIR)
+    raw_data_path = os.path.relpath(RAW_DATA_DIR)
 
     for path, dirs, files in os.walk(raw_data_path):
         # Search for XML reports in raw data directory
@@ -84,9 +84,9 @@ def __list_weak_files():
                         # Test the existence of the file for every source directory specified
                         file = RAW_DATA_DIR + "/" + src_dir.text + "/" + source_file
 
-                        if os.path.exists(file) and file not in weak_files:
+                        if os.path.exists(file):
                             # Add the file to the list of vulnerable ones only if it wasn't added before
-                            weak_files.append(file.replace("/./", "/"))
+                            weak_files.add(os.path.normpath(file.replace("/./", "/")))
                             break
 
     return weak_files
