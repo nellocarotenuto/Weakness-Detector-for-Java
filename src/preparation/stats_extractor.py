@@ -1,7 +1,7 @@
 import os
 import fnmatch
-import re
 
+import libs.javalang.tokenizer as tokenizer
 import src.preparation.labeler as labeler
 
 
@@ -25,13 +25,13 @@ def __count_file_lines(file):
         :rtype: int, int
     """
 
-    delimiters = "; |;|, |\.|: |{|{ |}|} |[|[ |]|] |\(|\( |\)|\) |\?|!|<|>|\+|=|&|^|%|-|~|:|/|\(|\*|\n|\"| "
     num_lines = 0
     num_tokens = 0
+
     with open(file, 'r') as f:
         for line in f:
             num_lines += 1
-            tokens = re.split(delimiters, line)
+            tokens = tokenizer.tokenize(line)
             tokens = list(filter(None, tokens))
             num_tokens += len(tokens)
 
@@ -80,12 +80,11 @@ def __extract_stats():
     global __lines_count
     global __tokens_count
 
-    raw_data_path = os.path.relpath(RAW_DATA_DIR)
-
-    for path, dirs, files in os.walk(raw_data_path):
+    for path, dirs, files in os.walk(RAW_DATA_DIR):
         # Search for .java files in raw data directory
         for filename in fnmatch.filter(files, "*.java"):
-            filepath = os.path.join(path, filename)
+            filepath = os.path.normpath(f"{path}/{filename}")
+
             if labeler.is_weak(filepath):
                 __files_count["weak"] += 1
                 lines_weak, tokens_weak = __count_file_lines(filepath)
