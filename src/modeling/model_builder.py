@@ -1,8 +1,8 @@
 import os
 import warnings
 
-from src.modeling.dataset_splitter import __train_data as train_data
-from src.modeling.dataset_splitter import __train_labels as train_labels
+from src.processing.dataset_splitter import __train_data as train_data
+from src.processing.dataset_splitter import __train_labels as train_labels
 
 from joblib import dump
 
