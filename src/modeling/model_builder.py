@@ -13,13 +13,15 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import SelectFromModel
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import ParameterGrid
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import MinMaxScaler
 
 
+CV_FOLDS = 5
 MODELS_DIR = "../../model"
-N_JOBS = 1
+N_JOBS = -1
 RANDOM_STATE = 7
 
 
@@ -76,7 +78,7 @@ def build_log_reg_models():
                 if type(selector) is PCA:
 
                     for param_grid in log_reg_param_grid:
-                        param_grid["selector__estimator__n_components"] = [0.95]
+                        param_grid["selector__n_components"] = [0.95]
 
                     steps.append(("selector", selector))
                     classifier_name += "pca-"
@@ -93,14 +95,20 @@ def build_log_reg_models():
 
             steps.append(("classifier", LogisticRegression()))
             classifier_name += "classifier"
+            print("Classifier:", classifier_name)
 
             pipeline = Pipeline(steps=steps)
 
+            number_of_combinations = len(ParameterGrid(log_reg_param_grid))
+            print("Combinations to evaluate:", number_of_combinations)
+
+            classifier = GridSearchCV(pipeline, param_grid=log_reg_param_grid, n_jobs=N_JOBS, cv=CV_FOLDS, verbose=1)
+
             with warnings.catch_warnings():
                 warnings.simplefilter(action="ignore", category=UserWarning)
-
-                classifier = GridSearchCV(pipeline, param_grid=log_reg_param_grid, n_jobs=N_JOBS, cv=5)
                 classifier.fit(train_data, train_labels)
 
             dump(classifier, f"{MODELS_DIR}/{classifier_name}.joblib")
+            print("Dump generated")
+            print()
 
