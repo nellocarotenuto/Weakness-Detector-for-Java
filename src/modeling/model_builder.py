@@ -26,6 +26,9 @@ RANDOM_STATE = 7
 def build_log_reg_models():
     """
         Builds various models grid searching a number of scalers, feature selectors and logistic regression parameters.
+
+        A model for each combination is built as a result of a cross validation process and stored into models directory
+        for future usage.
     """
     if not os.path.exists(MODELS_DIR):
         os.mkdir(MODELS_DIR)
@@ -57,18 +60,24 @@ def build_log_reg_models():
             classifier_name = ""
             steps = []
 
-            if scaler is not None:
+            if scaler is None:
+                classifier_name += "no_scaler-"
+            else:
                 steps.append(("scaler", scaler))
 
                 if type(scaler) is MinMaxScaler:
                     classifier_name += "minmax-"
                 elif type(scaler) is StandardScaler:
                     classifier_name += "standard-"
-            else:
-                classifier_name += "no_scaler-"
 
-            if selector is not None:
+            if selector is None:
+                classifier_name += "no_selector-"
+            else:
                 if type(selector) is PCA:
+
+                    for param_grid in log_reg_param_grid:
+                        param_grid["selector__estimator__n_components"] = [0.95]
+
                     steps.append(("selector", selector))
                     classifier_name += "pca-"
                 elif type(selector) is RandomForestRegressor:
@@ -81,8 +90,6 @@ def build_log_reg_models():
 
                     steps.append(("selector", SelectFromModel(selector)))
                     classifier_name += "rf-"
-            else:
-                classifier_name += "no_selector-"
 
             steps.append(("classifier", LogisticRegression()))
             classifier_name += "classifier"
@@ -92,7 +99,7 @@ def build_log_reg_models():
             with warnings.catch_warnings():
                 warnings.simplefilter(action="ignore", category=UserWarning)
 
-                classifier = GridSearchCV(pipeline, param_grid=log_reg_param_grid, cv=10)
+                classifier = GridSearchCV(pipeline, param_grid=log_reg_param_grid, n_jobs=N_JOBS, cv=5)
                 classifier.fit(train_data, train_labels)
 
             dump(classifier, f"{MODELS_DIR}/{classifier_name}.joblib")
