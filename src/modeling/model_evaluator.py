@@ -23,7 +23,7 @@ def evaluate_model(classifier, average="micro"):
         :param average: The method to compute average, default is micro
         :type average: str
 
-        :return: The metrics computed for the model
+        :return: The metrics computed for the models
         :rtype: dict
     """
     scores = {}

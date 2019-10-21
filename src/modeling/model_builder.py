@@ -20,7 +20,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 CV_FOLDS = 5
-MODELS_DIR = "../../model"
+MODELS_DIR = "../../models"
 N_JOBS = -1
 RANDOM_STATE = 7
 
@@ -29,7 +29,7 @@ def build_log_reg_models():
     """
         Builds various models grid searching a number of scalers, feature selectors and logistic regression parameters.
 
-        A model for each combination is built as a result of a cross validation process and stored into models directory
+        A models for each combination is built as a result of a cross validation process and stored into models directory
         for future usage.
     """
     if not os.path.exists(MODELS_DIR):
