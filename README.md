@@ -22,17 +22,17 @@ many different node types which the AST is made of. This choice is made to prese
 as this is not possible when using a bag of words approach, for example.
 
 A static analyzer is used to apply labels to the data extracted. The choice is [Spotbugs](https://spotbugs.github.io/)
-with its [Find Security Bugs](https://find-sec-bugs.github.io/) plugin. Every project to be analyzed was built as-is at
-first and then the analyzed to generate reports to be consumed by a [dedicated module](/src/preparation/labeler.py).
+with its [Find Security Bugs](https://find-sec-bugs.github.io/) plugin. Every project to be analyzed is built as-is at
+first and then analyzed to generate reports to be consumed by a [dedicated module](/src/preparation/labeler.py).
 
-The number of files analyzed is slightly over 40 thousands but a strong class imbalance pops up as the number of safe
-samples is well over the number of weak ones. This problem is solved with a massive undersampling, resulting in a
-balanced dataset of almost 7 thousands samples which is split in a 80%/20% fashion for training and testing purposes.
+The number of files analyzed is slightly over 40 thousands but a strong class imbalance is present as the number of safe
+samples is much higher than the number of weak ones. This problem is solved with a massive undersampling, resulting in a
+balanced dataset of almost 7 thousands entries which is split in a 80%-20% fashion for training and testing purposes.
 
 ## Model building
 
 A [few combinations](/notebook/modeling/log_reg.ipynb) of data scalers and feature selectors are taken in consideration
-for the selection of the best model when it comes to generalizing.
+for the selection of the best model when it comes to generalizing to unseen data.
 
 Scaling the data with MinMax and Standard scalers is considered as well as reducing the number of features with PCA and
 Random Forest feature importance. The choice of the pipeline as well as hyperparameters tuning is made by grid searching
